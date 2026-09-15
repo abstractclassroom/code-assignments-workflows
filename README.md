@@ -31,11 +31,13 @@ The workflow and its JSON are always verified against the instructor source.
    list individual files or entire directories. Use an empty list if none need
    replacement. The workflow and JSON are checked automatically; do not list them.
 3. Add your starter code and tests. Add your own build/test steps under `grading`,
-   **after the restore step and above the final `jwt` job**. Use any tools you need.
+   **after the restore step and before Save final score**. Use any tools you need.
    Set the grading timeout (the starter uses 10 minutes; up to 60 is supported).
-   Failed tests must fail the job. Do not mask failures with `continue-on-error` or
-   unconditional success commands. You are responsible for adding actual grading
-   steps: an empty grading section performs no assessment.
+   Update the `score` environment variable as checks earn points, persisting it
+   through `$GITHUB_ENV`. The final JWT contains that value as `grade`. You choose
+   the point scale and how expected test failures contribute to partial credit.
+   Unexpected workflow errors/timeouts still prevent issuance. The empty starter
+   performs no assessment and reports zero until you add grading steps.
 4. Save the private pairing token from the dashboard as the instructor repository's
    Actions secret `ABSTRACTCLASSROOM_SOURCE_TOKEN`. It expires after two hours and
    is consumed at first source pairing. Never commit it or copy it to students.
@@ -45,6 +47,51 @@ The workflow and its JSON are always verified against the instructor source.
    A private source repository works without a GitHub App or a stored GitHub token.
 6. Enable **Template repository** in GitHub settings and share it with students.
    Keep their two workflow/configuration files identical to the selected source.
+
+## Scoring
+
+The starter initializes the environment variable `score` to zero. Each instructor
+step can add points and persist the new value for subsequent steps:
+
+```yaml
+      - name: Score the first test
+        shell: bash
+        run: |
+          if ./test-one; then
+            score=$((score + 10))
+          fi
+          printf 'score=%s\n' "$score" >> "$GITHUB_ENV"
+      - name: Score the second test
+        shell: bash
+        run: |
+          if ./test-two; then
+            score=$((score + 20))
+          fi
+          printf 'score=%s\n' "$score" >> "$GITHUB_ENV"
+```
+
+These are instructor examples, not files included in the starter. Use your own
+commands, libraries and score calculations; decimals are supported too.
+Writing `$GITHUB_ENV` affects subsequent steps. Within the current shell, update
+`score` as shown before persisting it. A plain `export` does not survive the step.
+
+Keep **Save final score** last in `grading`. It exports `score` as a job output,
+which crosses the job boundary into the JWT workflow. The signed claim is a JSON
+number named `grade`, with no assumed maximum of 100, percentage sign, rounding,
+or platform-selected passing threshold. Scores must be finite, nonnegative and
+at most JavaScript's maximum safe number (9007199254740991). Missing, malformed,
+negative or non-finite scores are rejected. Zero is a valid grade.
+
+Partial grades are supported when the instructor deliberately handles a failed
+test and completes the grading job successfully, as in the examples above. Decide
+which failures mean zero points and which should stop grading. A failed, canceled
+or timed-out job produces no receipt. The JWT records `result: "graded"`; it does
+not claim every test passed. Existing receipts without a grade remain verifiable.
+
+The score is reported by the verified workflow, not independently recomputed by
+AbstractClassroom. Student code running in the same job can affect environment
+files, job outputs or the scoring process. Signing a grade authenticates the
+reported value and source binding; it does not eliminate that interference.
 
 ## Source branches and versions
 
@@ -76,14 +123,17 @@ invalidate a run using an unchanged version tag.
   separate grading-policy JSON, required container, build system, or report format.
 - The final `jwt` job runs separately after successful grading. AbstractClassroom
   recomputes the original workflow hash there, verifies its source binding, and
-  issues an assignment-specific `.ast` token. Signing keys stay on the server.
+  includes the final numeric `grade` in an assignment-specific `.ast` token.
+  Signing keys stay on the server.
 
 Keep the three supplied job IDs and their dependency wiring. Additional inline
 jobs must be included in `jwt.needs`; additional reusable jobs are not supported.
-The backend validates the final JWT dependency chain and the first restore step,
+The backend validates the final JWT dependency chain, first restore step, and
+final score output wiring,
 so the JWT cannot be requested by an unrelated job or a caller-supplied pass flag.
 The shared workflows use version tags; the server also checks the approved resolved
-workflow commit. Published AbstractClassroom version tags must never be moved.
+workflow commit and annotated tag object. Published AbstractClassroom version
+tags must never be moved.
 
 Listed paths must be ordinary relative paths, cannot overlap or include `.git` or
 `.github`, and must exist in the instructor source. Source packages are limited to
@@ -102,9 +152,9 @@ The dashboard provides an assignment-specific TA validator link. Verification
 requires the expected course and assignment. Existing receipts remain verifiable
 after cancellation or signing-key rotation. The LMS identifies the submitter.
 
-A receipt attests successful completion of the registered workflow. It does not
+A receipt attests the numeric grade reported by the registered workflow. It does not
 prove authorship, student identity, or honest execution of every assertion.
-Arbitrary student code can interfere with tests running alongside it; this service
+Arbitrary student code can interfere with tests or the score in its grading job; this service
 does not independently inspect or count assertions or validate test reports.
 Tests delivered to student-owned runners are visible, including tests published
 from a private instructor repository. Hidden assessments need separate infrastructure.

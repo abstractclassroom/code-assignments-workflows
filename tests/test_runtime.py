@@ -113,6 +113,25 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(set(json.loads(base64.b64decode(body["configuration"]))), {"assignmentId", "files", "sourceVersion"})
         self.assertIn("mode=source_waiting", output.read_text())
 
+    def test_score_accepts_zero_decimal_and_points_without_percentage_scale(self):
+        for raw, expected in [("0", 0), ("82.5", 82.5), ("250", 250)]:
+            self.assertEqual(runtime.grade_value(raw), expected)
+        for raw in ["", "null", "true", "\"100\"", "[]", "-1", "NaN", "Infinity", "1e999", "9007199254740992", "score=100"]:
+            with self.subTest(raw=raw), self.assertRaises(ValueError):
+                runtime.grade_value(raw)
+
+    def test_receipt_sends_numeric_score_with_original_workflow_proof(self):
+        receipt_dir = self.root / "receipt"
+        response = {"filename": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.ast", "token": "fixture.receipt.signature"}
+        with patch.dict(os.environ, {"SUBMISSION_PATH": str(self.repo), "ASSIGNMENT_ID": "aca_" + "x" * 32,
+                                    "ASSIGNMENT_GRADE": "82.5", "RECEIPT_PATH": str(receipt_dir)}), \
+             patch.object(runtime, "oidc", return_value=("fixture", {"workflow_sha": self.source_commit})), \
+             patch.object(runtime, "request", return_value=response) as request:
+            runtime.receipt()
+        self.assertEqual(request.call_args.args[2]["grade"], 82.5)
+        self.assertEqual(request.call_args.args[2]["workflowDigest"], runtime.sha(runtime.file_at(self.repo, self.source_commit, runtime.WORKFLOW)))
+        self.assertEqual((receipt_dir / response["filename"]).read_text().strip(), response["token"])
+
 
 if __name__ == "__main__":
     unittest.main()

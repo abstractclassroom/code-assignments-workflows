@@ -125,7 +125,7 @@ invalidate a run using an unchanged version tag.
   separate grading-policy JSON, required container, build system, or report format.
 - The final `jwt` job runs separately after successful grading. AbstractClassroom
   recomputes the original workflow hash there, verifies its source binding, and
-  includes the final numeric `grade` in an assignment-specific `.ast` token.
+  includes the final numeric `grade` in an assignment-specific JWT.
   Signing keys stay on the server.
 
 Keep the coordinator wiring and the instructor workflow's supplied `grading` job.
@@ -148,15 +148,19 @@ submodules. A symlink ancestor that would redirect restoration is rejected.
 Students create a repository from the instructor template, complete their work,
 and push. No AbstractClassroom student account or secret is needed. Their Actions
 allowance pays for the run. At the bottom of the workflow run summary, the final
-JWT job displays the score, run ID and attempt, and **gradetoken.ast**. Copy its token
-from the code block into a file named `gradetoken.ast` and submit it through the LMS.
-The summary also links to the `gradetoken-<attempt>` ZIP artifact containing that
-same `gradetoken.ast` file. Artifacts are retained for 30 days. Token content is
-intentionally displayed in the run summary; its visibility follows repository
-access. It is not printed in raw action logs. Source-only instructor runs publish
-files and do not create student grade tokens.
+JWT job displays the score, run ID and attempt, and **Grade token**. Copy the token
+from its code block and paste it into the LMS submission. There are no token files,
+`.ast` artifacts or download links. Token content is intentionally retained in
+GitHub's saved run summary; its visibility follows repository access. It is not
+printed in raw action logs. Source-only instructor runs publish files and do not
+create student grade tokens.
 
-The dashboard provides an assignment-specific TA validator link. Verification
+AbstractClassroom stores the grade and issuance metadata, not the JWT string.
+An authorized retry reconstructs the same token from those facts and the retained
+signing key. GitHub's summary and the user's chosen LMS are the intended places
+where a copied token may be retained.
+
+The dashboard provides an assignment-specific TA validator link with a paste field. Verification
 requires the expected course and assignment. Existing receipts remain verifiable
 after cancellation or signing-key rotation. The LMS identifies the submitter.
 

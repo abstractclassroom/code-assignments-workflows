@@ -24,26 +24,12 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: abstractclassroom/code-assignments-workflows
-          ref: v1.2.0
+          ref: v1.3.0
           path: runtime
           persist-credentials: false
-      - name: Recheck the workflow hash and request the assignment JWT
+      - name: Verify workflows and display the score and grade token
         env:
           ASSIGNMENT_ID: ${{ inputs.assignment-id }}
           ASSIGNMENT_GRADE: ${{ inputs.grade }}
           SUBMISSION_PATH: ${{ github.workspace }}/submission
-          RECEIPT_PATH: ${{ runner.temp }}/abstractclassroom-receipt
         run: python3 -I "$GITHUB_WORKSPACE/runtime/scripts/runtime.py" receipt
-      - id: grade-token
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: gradetoken-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/abstractclassroom-receipt/*.ast
-          if-no-files-found: error
-          retention-days: 30
-      - name: Show score and gradetoken.ast
-        env:
-          GRADE_ARTIFACT_URL: ${{ steps.grade-token.outputs.artifact-url }}
-          ASSIGNMENT_GRADE: ${{ inputs.grade }}
-          RECEIPT_PATH: ${{ runner.temp }}/abstractclassroom-receipt
-        run: python3 -I "$GITHUB_WORKSPACE/runtime/scripts/runtime.py" summary

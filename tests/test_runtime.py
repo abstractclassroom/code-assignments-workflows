@@ -24,7 +24,7 @@ class RuntimeTests(unittest.TestCase):
         self.git("init", "-b", "main")
         self.write(runtime.WORKFLOW, "name: Teacher workflow\n")
         self.write(runtime.INSTRUCTOR, "name: Instructor tests\n")
-        self.write(runtime.CONFIG, json.dumps({"assignmentId": "aca_" + "x" * 32, "files": ["tests", "build-config"], "sourceVersion": "main"}))
+        self.write(runtime.CONFIG, json.dumps({"assignmentId": "aca_" + "x" * 32, "protected_files": ["tests", "build-config"], "sourceVersion": "main"}))
         self.write("tests/check", "teacher assertions\n")
         self.write("build-config", "teacher build\n")
         self.write("student code.txt", "original code\n")
@@ -133,8 +133,23 @@ class RuntimeTests(unittest.TestCase):
             runtime.prepare()
         body = request.call_args.args[2]
         self.assertEqual(body["workflowDigest"], runtime.sha(runtime.file_at(self.repo, self.source_commit, runtime.WORKFLOW)))
-        self.assertEqual(set(json.loads(base64.b64decode(body["configuration"]))), {"assignmentId", "files", "sourceVersion"})
+        self.assertEqual(set(json.loads(base64.b64decode(body["configuration"]))), {"assignmentId", "protected_files", "sourceVersion"})
         self.assertIn("mode=source_waiting", output.read_text())
+
+    def test_source_publication_uses_protected_files_for_files_and_directories(self):
+        output = self.root / "outputs"
+        claims = {"workflow_sha": self.source_commit, "sha": self.source_commit}
+        with patch.dict(os.environ, {"SUBMISSION_PATH": str(self.repo), "GITHUB_SHA": self.source_commit,
+             "GITHUB_OUTPUT": str(output)}), \
+             patch.object(runtime, "oidc", return_value=("fixture", claims)), \
+             patch.object(runtime, "request", return_value={"mode": "source"}), \
+             patch.object(runtime, "call", return_value=({}, claims)) as call:
+            runtime.prepare()
+        published = call.call_args.args[0]
+        self.assertEqual(published["action"], "publish")
+        self.assertEqual(published["snapshot"], self.snapshot)
+        self.assertEqual(published["snapshot"]["replacePaths"], ["build-config", "tests"])
+        self.assertIn("mode=source", output.read_text())
 
     def test_score_accepts_zero_decimal_and_points_without_percentage_scale(self):
         for raw, expected in [("0", 0), ("82.5", 82.5), ("250", 250)]:

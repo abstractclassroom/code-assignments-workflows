@@ -28,18 +28,18 @@ is the only assignment workflow.
    ```json
    {
      "assignmentId": "YOUR_ASSIGNMENT_ID",
-     "files": ["tests", "build-config"],
+     "protected_files": ["tests", "build-config"],
      "sourceVersion": "main"
    }
    ```
 
-   Use the public assignment ID from the dashboard. `files` accepts individual
+   Use the public assignment ID from the dashboard. `protected_files` accepts individual
    files, directories, or a mixture, such as `["Assignment/pom.xml", "Assignment/src/test/java/instructor"]`.
    Paths are relative to the repository root, not the instructor directory.
    Listed paths are **deleted
    completely and replaced**, not merged. Files outside those paths are preserved.
    The coordinator, instructor action and JSON are checked automatically. Do not
-   list them in `files` or use paths under `.github`.
+   list them in `protected_files` or use paths under `.github`.
 3. Add starter code and tests. Edit `.github/actions/instructor/action.yml`
    between **Initialize score** and **Save final score**. Add ordinary tool setup,
    tests and score calculation. Persist score updates through `$GITHUB_ENV`.
@@ -156,8 +156,9 @@ waits without publishing the wrong version. The API records resolved commits.
 
 Version `v4.0.0` requires the JSON configuration beside the instructor action at
 `.github/actions/instructor/auto-grading-config.json`. The old configuration path
-is not supported. Deploy matching backend validation/trust, move the JSON without
-changing its assignment ID or protected paths, update the coordinator to `v4.0.0`,
+is not supported. Rename the JSON field `files` to `protected_files`; the filename
+stays `auto-grading-config.json`. Deploy matching backend validation/trust, move
+the JSON without changing its assignment ID or protected paths, update the coordinator to `v4.0.0`,
 and republish the selected instructor source before updating student copies.
 The starter no longer includes a manual grading wrapper. `Auto grading` calls
 shared `grading.yml` and displays the same API-issued Grade Tokens. Do not edit

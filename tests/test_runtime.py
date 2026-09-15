@@ -108,6 +108,22 @@ class RuntimeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             runtime.safe_path("../outside")
 
+    def test_configuration_is_required_beside_the_instructor_action(self):
+        self.assertEqual(runtime.CONFIG, ".github/actions/instructor/auto-grading-config.json")
+        self.assertEqual(Path(runtime.CONFIG).parent, Path(runtime.INSTRUCTOR).parent)
+        old_path = ".github/workflows/auto-grading-config.json"
+        self.assertIn(runtime.CONFIG, {entry["path"] for entry in self.snapshot["files"]})
+        self.assertNotIn(old_path, {entry["path"] for entry in self.snapshot["files"]})
+        (self.repo / runtime.CONFIG).rename(self.repo / old_path)
+        commit = self.commit()
+        claims = {"workflow_sha": commit, "sha": commit}
+        with patch.dict(os.environ, {"SUBMISSION_PATH": str(self.repo), "GITHUB_SHA": commit}), \
+             patch.object(runtime, "oidc", return_value=("fixture", claims)), \
+             patch.object(runtime, "request") as request:
+            with self.assertRaises(ValueError):
+                runtime.prepare()
+            request.assert_not_called()
+
     def test_prepare_reads_three_field_json_and_handles_unpublished_version(self):
         output = self.root / "outputs"
         claims = {"workflow_sha": self.source_commit, "sha": self.source_commit}

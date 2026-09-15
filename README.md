@@ -6,24 +6,24 @@ All jobs run in the caller's GitHub account. The API alone signs Grade Tokens.
 ## Assignment files
 
 The [instructor starter](https://github.com/abstractclassroom/code-assignments-template)
-has three verified files and one small manual-run wrapper:
+has three verified files:
 
 ```text
-.github/actions/instructor/action.yml          # Instructor tests and scoring
-.github/workflows/auto-grading-config.json       # Assignment and protected paths
-.github/workflows/auto-grading-workflow.yml      # Automatic coordinator
-.github/workflows/instructor_autograder.yml     # Manual score-only wrapper
+.github/actions/instructor/action.yml           # Instructor tests and scoring
+.github/actions/instructor/auto-grading-config.json # Assignment and protected paths
+.github/workflows/auto-grading-workflow.yml       # Automatic coordinator
 ```
 
 Keep these paths. Only the instructor action contains grading logic. It has no
-checkout, artifact handling, API calls or token-generation steps. The manual
-wrapper calls the same shared grading workflow without contacting the API.
+checkout, artifact handling, API calls or token-generation steps. **Auto grading**
+is the only assignment workflow.
 
 ## Instructor setup
 
 1. [Register a Code Assignments course](https://preview.abstractclassroom.com/code-assignments/register/)
    and create an assignment. The subscription is $5/course/month, with no free trial.
-2. Create an instructor repository from the starter. Configure:
+2. Create an instructor repository from the starter. Configure
+   `.github/actions/instructor/auto-grading-config.json`, beside `action.yml`:
 
    ```json
    {
@@ -33,7 +33,10 @@ wrapper calls the same shared grading workflow without contacting the API.
    }
    ```
 
-   Use the public assignment ID from the dashboard. Listed paths are **deleted
+   Use the public assignment ID from the dashboard. `files` accepts individual
+   files, directories, or a mixture, such as `["Assignment/pom.xml", "Assignment/src/test/java/instructor"]`.
+   Paths are relative to the repository root, not the instructor directory.
+   Listed paths are **deleted
    completely and replaced**, not merged. Files outside those paths are preserved.
    The coordinator, instructor action and JSON are checked automatically. Do not
    list them in `files` or use paths under `.github`.
@@ -78,10 +81,10 @@ token issuance. The shared grading timeout defaults to 10 minutes; instructors
 may set `timeout-minutes` from 1 to 60 under the coordinator grading call's
 `with` block before republishing.
 
-For independent checks, use **Actions → Instructor autograder → Run workflow**.
-The manual wrapper checks out the selected commit and invokes the same action.
-It requires no API access, subscription, pairing or secret. It displays a score
-but does not issue a Grade Token. Automatic pushes run only **Auto grading**.
+Run the assignment's test command locally for independent checks. Push changes
+or choose **Actions → Auto grading → Run workflow** for the normal pipeline.
+Registered instructor source runs publish the source; student runs grade the
+submission and request a Grade Token.
 
 ## Execution and trust
 
@@ -113,8 +116,8 @@ Restoration modifies only the runner checkout, never student Git commits.
 
 The API validates the fixed coordinator, pinned shared grading call, immutable
 artifact ID handoff, grading permissions, action metadata and final score output.
-Student edits to the action or configuration are rejected. The manual wrapper is
-not an authorization entrypoint and cannot issue a token. Extra coordinator jobs,
+Student edits to the action or configuration are rejected. Only the coordinator
+is an authorization entrypoint. Extra coordinator jobs,
 arbitrary grading workflow calls and caller-selected score inputs are rejected.
 Shared version tags and their approved commit/tag identities are immutable.
 
@@ -151,11 +154,14 @@ advance. Published tags cannot move, and branch/tag name collisions are rejected
 Set a tag name in JSON before publishing that tag. A source push on another ref
 waits without publishing the wrong version. The API records resolved commits.
 
-Version `v3.0.0` moves instructor logic into the composite action, adds shared
-`grading.yml`, and accepts API-issued copyable Grade Tokens. Deploy matching
-backend validation/trust first, update the coordinator/action/JSON, retain the
-small manual wrapper, and republish the selected instructor source. Do not edit
-published tags or re-pair an already connected source.
+Version `v4.0.0` requires the JSON configuration beside the instructor action at
+`.github/actions/instructor/auto-grading-config.json`. The old configuration path
+is not supported. Deploy matching backend validation/trust, move the JSON without
+changing its assignment ID or protected paths, update the coordinator to `v4.0.0`,
+and republish the selected instructor source before updating student copies.
+The starter no longer includes a manual grading wrapper. `Auto grading` calls
+shared `grading.yml` and displays the same API-issued Grade Tokens. Do not edit
+published tags or re-pair an already connected source. Existing receipts remain valid.
 
 The action under this shared repository's own `.github/actions/instructor`
 is a public synthetic CI fixture, not a student assignment. CI exercises action

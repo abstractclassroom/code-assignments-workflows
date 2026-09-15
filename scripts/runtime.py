@@ -17,7 +17,7 @@ from pathlib import Path
 API = "https://preview.abstractclassroom.com/api/code-assignments/github/workflow"
 AUDIENCE = "abstractclassroom-code-assignments"
 WORKFLOW = ".github/workflows/auto-grading-workflow.yml"
-CONFIG = ".github/workflows/auto-grading-config.json"
+CONFIG = ".github/actions/instructor/auto-grading-config.json"
 INSTRUCTOR = ".github/actions/instructor/action.yml"
 MAX_BYTES = 2 * 1024 * 1024
 MAX_WORKSPACE_BYTES = 100 * 1024 * 1024

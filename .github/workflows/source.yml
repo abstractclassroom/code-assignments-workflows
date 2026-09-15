@@ -1,0 +1,52 @@
+name: Verify AbstractClassroom source
+on:
+  workflow_call:
+    secrets:
+      source-pairing-token:
+        required: false
+    outputs:
+      mode:
+        value: ${{ jobs.source.outputs.mode }}
+      assignment-id:
+        value: ${{ jobs.source.outputs.assignment-id }}
+      artifact-id:
+        value: ${{ jobs.source.outputs.artifact-id }}
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  source:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      mode: ${{ steps.source.outputs.mode }}
+      assignment-id: ${{ steps.source.outputs.assignment-id }}
+      artifact-id: ${{ steps.package.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          path: submission
+          persist-credentials: false
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: abstractclassroom/code-assignments-workflows
+          ref: v1.0.0
+          path: runtime
+          persist-credentials: false
+      - name: Verify the workflow and resolve the instructor source version
+        id: source
+        env:
+          SOURCE_PAIRING_TOKEN: ${{ secrets.source-pairing-token }}
+          SUBMISSION_PATH: ${{ github.workspace }}/submission
+          PACKAGE_PATH: ${{ runner.temp }}/abstractclassroom-source
+        run: python3 -I "$GITHUB_WORKSPACE/runtime/scripts/runtime.py" prepare
+      - name: Preserve the verified source for the grading job
+        if: steps.source.outputs.mode == 'grade'
+        id: package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: assignment-source-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/abstractclassroom-source/source.json
+          if-no-files-found: error
+          retention-days: 1

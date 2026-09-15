@@ -1,0 +1,38 @@
+name: Issue AbstractClassroom JWT
+on:
+  workflow_call:
+    inputs:
+      assignment-id:
+        required: true
+        type: string
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  receipt:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          path: submission
+          persist-credentials: false
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: abstractclassroom/code-assignments-workflows
+          ref: v1.0.0
+          path: runtime
+          persist-credentials: false
+      - name: Recheck the workflow hash and request the assignment JWT
+        env:
+          ASSIGNMENT_ID: ${{ inputs.assignment-id }}
+          SUBMISSION_PATH: ${{ github.workspace }}/submission
+          RECEIPT_PATH: ${{ runner.temp }}/abstractclassroom-receipt
+        run: python3 -I "$GITHUB_WORKSPACE/runtime/scripts/runtime.py" receipt
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: assignment-completion-token-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/abstractclassroom-receipt/*.ast
+          if-no-files-found: error
+          retention-days: 30

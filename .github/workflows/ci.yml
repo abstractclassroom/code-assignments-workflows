@@ -1,0 +1,11 @@
+name: Validate shared assignment workflows
+on: [push, pull_request]
+permissions: { contents: read }
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Test exact restoration and workflow integrity
+        run: PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v

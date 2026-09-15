@@ -193,33 +193,22 @@ def receipt():
         "workflow": base64.b64encode(workflow).decode(), "workflowDigest": sha(workflow),
         "instructorWorkflow": base64.b64encode(file_at(repo, claims["workflow_sha"], INSTRUCTOR)).decode(),
         "configuration": base64.b64encode(file_at(Path(os.environ["SUBMISSION_PATH"]), claims["workflow_sha"], CONFIG)).decode()})
-    filename = result.get("filename", "")
-    if filename != "gradetoken.ast" or not re.fullmatch(r"[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+", result.get("token", "")):
-        raise ValueError("Invalid completion token response")
-    folder = Path(os.environ["RECEIPT_PATH"])
-    folder.mkdir(parents=True, exist_ok=False)
-    (folder / filename).write_text(result["token"] + "\n")
-    print("Completion token created. Download the artifact and submit the .ast file through your LMS.")
+    token = result.get("token", "")
+    if not re.fullmatch(r"[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+", token) or result.get("claims", {}).get("grade") != grade:
+        raise ValueError("Invalid grade token response")
+    summary(grade, token)
 
 
-
-def summary():
-    grade = grade_value(os.environ.get("ASSIGNMENT_GRADE", ""))
-    token = (Path(os.environ["RECEIPT_PATH"]) / "gradetoken.ast").read_text().strip()
-    if not re.fullmatch(r"[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+", token):
-        raise ValueError("Invalid grade token file")
+def summary(grade, token):
     repo, run, attempt = os.environ["GITHUB_REPOSITORY"], os.environ["GITHUB_RUN_ID"], os.environ["GITHUB_RUN_ATTEMPT"]
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo) or not run.isdigit() or not attempt.isdigit():
         raise ValueError("Invalid workflow run identity")
     url = f"https://github.com/{repo}/actions/runs/{run}/attempts/{attempt}"
-    artifact_url = os.environ["GRADE_ARTIFACT_URL"]
-    if not re.fullmatch(re.escape(f"https://github.com/{repo}/actions/runs/{run}/artifacts/") + r"[0-9]+", artifact_url):
-        raise ValueError("Invalid grade artifact link")
     with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as stream:
         stream.write(f"## Score: {grade}\n\nRun [{run}, attempt {attempt}]({url})\n\n")
-        stream.write(f"### gradetoken.ast\n\n[Download gradetoken.ast]({artifact_url}) (ZIP artifact).\n\nCopy the token below into `gradetoken.ast` for your LMS.\n\n")
+        stream.write("### Grade token\n\nCopy the token below and paste it into your LMS submission.\n\n")
         stream.write(f"```text\n{token}\n```\n")
-    print("Score and gradetoken.ast are available in the workflow run summary.")
+    print("Score and grade token are available in the workflow run summary.")
 
 
 def restore_files(repo, commit, source):
@@ -291,7 +280,7 @@ def restore():
 if __name__ == "__main__":
     import sys
     try:
-        {"prepare": prepare, "receipt": receipt, "restore": restore, "summary": summary}[sys.argv[1]]()
+        {"prepare": prepare, "receipt": receipt, "restore": restore}[sys.argv[1]]()
     except Exception as error:
         # Do not include variable data or command output in workflow annotations.
         print("AbstractClassroom stopped: " + json.dumps(str(error)))

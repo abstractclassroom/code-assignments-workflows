@@ -122,33 +122,36 @@ class RuntimeTests(unittest.TestCase):
             with self.subTest(raw=raw), self.assertRaises(ValueError):
                 runtime.grade_value(raw)
 
-    def test_receipt_sends_numeric_score_with_original_workflow_proof(self):
-        receipt_dir = self.root / "receipt"
-        response = {"filename": "gradetoken.ast", "token": "fixture.receipt.signature"}
+    def test_receipt_displays_numeric_grade_and_matching_token_without_token_files(self):
+        summary_file = self.root / "summary.md"
+        response = {"token": "fixture.receipt.signature", "claims": {"grade": 82.5}}
+        before = {p.relative_to(self.root) for p in self.root.rglob("*") if p.is_file()}
         with patch.dict(os.environ, {"SUBMISSION_PATH": str(self.repo), "ASSIGNMENT_ID": "aca_" + "x" * 32,
-                                    "ASSIGNMENT_GRADE": "82.5", "RECEIPT_PATH": str(receipt_dir)}), \
+             "ASSIGNMENT_GRADE": "82.5", "GITHUB_STEP_SUMMARY": str(summary_file),
+             "GITHUB_REPOSITORY": "student/assignment", "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "2"}), \
              patch.object(runtime, "oidc", return_value=("fixture", {"workflow_sha": self.source_commit})), \
              patch.object(runtime, "request", return_value=response) as request:
             runtime.receipt()
         self.assertEqual(request.call_args.args[2]["grade"], 82.5)
         self.assertEqual(request.call_args.args[2]["workflowDigest"], runtime.sha(runtime.file_at(self.repo, self.source_commit, runtime.WORKFLOW)))
-        self.assertEqual((receipt_dir / response["filename"]).read_text().strip(), response["token"])
-
-    def test_final_summary_has_score_matching_run_and_copyable_token_file(self):
-        receipt_dir = self.root / "receipt"
-        receipt_dir.mkdir()
-        (receipt_dir / "gradetoken.ast").write_text("fixture.receipt.signature\n")
-        summary_file = self.root / "summary.md"
-        with patch.dict(os.environ, {"ASSIGNMENT_GRADE": "82.5", "RECEIPT_PATH": str(receipt_dir),
-             "GITHUB_STEP_SUMMARY": str(summary_file), "GITHUB_REPOSITORY": "student/assignment",
-             "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "2",
-             "GRADE_ARTIFACT_URL": "https://github.com/student/assignment/actions/runs/123/artifacts/456"}):
-            runtime.summary()
         content = summary_file.read_text()
         self.assertIn("## Score: 82.5", content)
         self.assertIn("/actions/runs/123/attempts/2", content)
-        self.assertIn("### gradetoken.ast", content)
+        self.assertIn("### Grade token", content)
         self.assertTrue(content.endswith("```text\nfixture.receipt.signature\n```\n"))
+        after = {p.relative_to(self.root) for p in self.root.rglob("*") if p.is_file()}
+        self.assertEqual(after - before, {Path("summary.md")})
+        self.assertFalse(list(self.root.rglob("*.ast")))
+
+    def test_mismatched_score_is_not_displayed(self):
+        summary_file = self.root / "summary.md"
+        with patch.dict(os.environ, {"SUBMISSION_PATH": str(self.repo), "ASSIGNMENT_ID": "aca_" + "x" * 32,
+             "ASSIGNMENT_GRADE": "10", "GITHUB_STEP_SUMMARY": str(summary_file)}), \
+             patch.object(runtime, "oidc", return_value=("fixture", {"workflow_sha": self.source_commit})), \
+             patch.object(runtime, "request", return_value={"token": "fixture.receipt.signature", "claims": {"grade": 100}}):
+            with self.assertRaises(ValueError):
+                runtime.receipt()
+        self.assertFalse(summary_file.exists())
 
 
 if __name__ == "__main__":

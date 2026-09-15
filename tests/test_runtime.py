@@ -22,6 +22,7 @@ class RuntimeTests(unittest.TestCase):
         self.repo.mkdir()
         self.git("init", "-b", "main")
         self.write(runtime.WORKFLOW, "name: Teacher workflow\n")
+        self.write(runtime.INSTRUCTOR, "name: Instructor tests\n")
         self.write(runtime.CONFIG, json.dumps({"assignmentId": "aca_" + "x" * 32, "files": ["tests", "build-config"], "sourceVersion": "main"}))
         self.write("tests/check", "teacher assertions\n")
         self.write("build-config", "teacher build\n")
@@ -45,6 +46,7 @@ class RuntimeTests(unittest.TestCase):
     def package(self, commit):
         return {"snapshot": self.snapshot, "policyDigest": runtime.sha(runtime.canonical(self.snapshot)),
                 "workflowDigest": runtime.sha(runtime.file_at(self.repo, self.source_commit, runtime.WORKFLOW)),
+                "instructorWorkflowDigest": runtime.sha(runtime.file_at(self.repo, self.source_commit, runtime.INSTRUCTOR)),
                 "configDigest": runtime.sha(runtime.file_at(self.repo, self.source_commit, runtime.CONFIG)), "commitSha": commit}
 
     def test_exact_deletion_and_restoration_preserve_student_files(self):
@@ -60,7 +62,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual((self.repo / "student code.txt").read_text(), "student implementation")
 
     def test_workflow_and_json_tampering_fail_before_replacement(self):
-        for name in (runtime.WORKFLOW, runtime.CONFIG):
+        for name in (runtime.WORKFLOW, runtime.INSTRUCTOR, runtime.CONFIG):
             with self.subTest(name=name):
                 original = (self.repo / name).read_bytes()
                 self.write(name, "changed")
@@ -95,9 +97,9 @@ class RuntimeTests(unittest.TestCase):
             runtime.restore_files(self.repo, self.source_commit, source)
 
     def test_source_contains_only_json_workflow_and_listed_paths(self):
-        self.assertEqual(self.snapshot["schemaVersion"], 2)
+        self.assertEqual(self.snapshot["schemaVersion"], 3)
         self.assertEqual({entry["path"] for entry in self.snapshot["files"]},
-                         {runtime.WORKFLOW, runtime.CONFIG, "tests/check", "build-config"})
+                         {runtime.WORKFLOW, runtime.INSTRUCTOR, runtime.CONFIG, "tests/check", "build-config"})
         with self.assertRaises(ValueError):
             runtime.safe_path("../outside")
 
@@ -122,7 +124,7 @@ class RuntimeTests(unittest.TestCase):
 
     def test_receipt_sends_numeric_score_with_original_workflow_proof(self):
         receipt_dir = self.root / "receipt"
-        response = {"filename": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.ast", "token": "fixture.receipt.signature"}
+        response = {"filename": "gradetoken.ast", "token": "fixture.receipt.signature"}
         with patch.dict(os.environ, {"SUBMISSION_PATH": str(self.repo), "ASSIGNMENT_ID": "aca_" + "x" * 32,
                                     "ASSIGNMENT_GRADE": "82.5", "RECEIPT_PATH": str(receipt_dir)}), \
              patch.object(runtime, "oidc", return_value=("fixture", {"workflow_sha": self.source_commit})), \
@@ -131,6 +133,22 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(request.call_args.args[2]["grade"], 82.5)
         self.assertEqual(request.call_args.args[2]["workflowDigest"], runtime.sha(runtime.file_at(self.repo, self.source_commit, runtime.WORKFLOW)))
         self.assertEqual((receipt_dir / response["filename"]).read_text().strip(), response["token"])
+
+    def test_final_summary_has_score_matching_run_and_copyable_token_file(self):
+        receipt_dir = self.root / "receipt"
+        receipt_dir.mkdir()
+        (receipt_dir / "gradetoken.ast").write_text("fixture.receipt.signature\n")
+        summary_file = self.root / "summary.md"
+        with patch.dict(os.environ, {"ASSIGNMENT_GRADE": "82.5", "RECEIPT_PATH": str(receipt_dir),
+             "GITHUB_STEP_SUMMARY": str(summary_file), "GITHUB_REPOSITORY": "student/assignment",
+             "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "2",
+             "GRADE_ARTIFACT_URL": "https://github.com/student/assignment/actions/runs/123/artifacts/456"}):
+            runtime.summary()
+        content = summary_file.read_text()
+        self.assertIn("## Score: 82.5", content)
+        self.assertIn("/actions/runs/123/attempts/2", content)
+        self.assertIn("### gradetoken.ast", content)
+        self.assertTrue(content.endswith("```text\nfixture.receipt.signature\n```\n"))
 
 
 if __name__ == "__main__":

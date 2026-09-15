@@ -16,6 +16,7 @@ API = "https://preview.abstractclassroom.com/api/code-assignments/github/workflo
 AUDIENCE = "abstractclassroom-code-assignments"
 WORKFLOW = ".github/workflows/auto-grading-workflow.yml"
 CONFIG = ".github/workflows/auto-grading-config.json"
+INSTRUCTOR = ".github/workflows/instructor_autograder.yml"
 MAX_BYTES = 2 * 1024 * 1024
 
 
@@ -120,7 +121,7 @@ def source_package(repo, commit, replace_paths):
     files = []
     total = 0
     for path, mode, kind, oid in tree(repo, commit):
-        if path not in (WORKFLOW, CONFIG) and not any(path == root or path.startswith(root + "/") for root in roots):
+        if path not in (WORKFLOW, INSTRUCTOR, CONFIG) and not any(path == root or path.startswith(root + "/") for root in roots):
             continue
         if mode not in ("100644", "100755") or kind != "blob":
             raise ValueError("Protected source paths cannot contain symlinks or submodules")
@@ -129,7 +130,7 @@ def source_package(repo, commit, replace_paths):
         if total > MAX_BYTES or len(files) >= 500:
             raise ValueError("Protected files exceed the 2 MiB / 500 file limit")
         files.append({"path": path, "mode": mode, "content": base64.b64encode(content).decode()})
-    return {"schemaVersion": 2, "replacePaths": roots, "files": sorted(files, key=lambda item: item["path"])}
+    return {"schemaVersion": 3, "replacePaths": roots, "files": sorted(files, key=lambda item: item["path"])}
 
 
 def output(name, value):
@@ -152,7 +153,8 @@ def prepare():
         raise ValueError("The checkout and executed workflow revision do not match")
     workflow = file_at(repo, commit, WORKFLOW)
     result = request(API, {"Authorization": "Bearer " + token}, {"action": "prepare", "assignmentId": assignment,
-        "workflow": base64.b64encode(workflow).decode(), "workflowDigest": sha(workflow), "configuration": base64.b64encode(configuration).decode(), "pairingToken": os.environ.get("SOURCE_PAIRING_TOKEN", "")})
+        "workflow": base64.b64encode(workflow).decode(), "workflowDigest": sha(workflow),
+        "instructorWorkflow": base64.b64encode(file_at(repo, commit, INSTRUCTOR)).decode(), "configuration": base64.b64encode(configuration).decode(), "pairingToken": os.environ.get("SOURCE_PAIRING_TOKEN", "")})
     if result["mode"] == "source":
         snapshot = source_package(repo, commit, "\n".join(config["files"]))
         call({"action": "publish", "assignmentId": assignment, "snapshot": snapshot})
@@ -160,7 +162,7 @@ def prepare():
     elif result["mode"] == "source_waiting":
         print("Source publication waits for a push or workflow run on the branch/tag named by sourceVersion.")
     elif result["mode"] == "grade":
-        if result["workflowDigest"] != sha(workflow) or result["configDigest"] != sha(configuration) or result["commitSha"] != commit:
+        if result["instructorWorkflowDigest"] != sha(file_at(repo, commit, INSTRUCTOR)) or result["workflowDigest"] != sha(workflow) or result["configDigest"] != sha(configuration) or result["commitSha"] != commit:
             raise ValueError("The source workflow or submission revision does not match")
         package = Path(os.environ["PACKAGE_PATH"])
         package.mkdir(parents=True, exist_ok=False)
@@ -184,13 +186,15 @@ def grade_value(raw):
 def receipt():
     grade = grade_value(os.environ.get("ASSIGNMENT_GRADE", ""))
     token, claims = oidc()
-    workflow = file_at(Path(os.environ["SUBMISSION_PATH"]), claims["workflow_sha"], WORKFLOW)
+    repo = Path(os.environ["SUBMISSION_PATH"])
+    workflow = file_at(repo, claims["workflow_sha"], WORKFLOW)
     result = request(API, {"Authorization": "Bearer " + token}, {
         "action": "receipt", "assignmentId": os.environ["ASSIGNMENT_ID"], "grade": grade,
         "workflow": base64.b64encode(workflow).decode(), "workflowDigest": sha(workflow),
+        "instructorWorkflow": base64.b64encode(file_at(repo, claims["workflow_sha"], INSTRUCTOR)).decode(),
         "configuration": base64.b64encode(file_at(Path(os.environ["SUBMISSION_PATH"]), claims["workflow_sha"], CONFIG)).decode()})
     filename = result.get("filename", "")
-    if not re.fullmatch(r"[a-f0-9-]{36}\.ast", filename) or not re.fullmatch(r"[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+", result.get("token", "")):
+    if filename != "gradetoken.ast" or not re.fullmatch(r"[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+", result.get("token", "")):
         raise ValueError("Invalid completion token response")
     folder = Path(os.environ["RECEIPT_PATH"])
     folder.mkdir(parents=True, exist_ok=False)
@@ -199,12 +203,36 @@ def receipt():
 
 
 
+def summary():
+    grade = grade_value(os.environ.get("ASSIGNMENT_GRADE", ""))
+    token = (Path(os.environ["RECEIPT_PATH"]) / "gradetoken.ast").read_text().strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+", token):
+        raise ValueError("Invalid grade token file")
+    repo, run, attempt = os.environ["GITHUB_REPOSITORY"], os.environ["GITHUB_RUN_ID"], os.environ["GITHUB_RUN_ATTEMPT"]
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo) or not run.isdigit() or not attempt.isdigit():
+        raise ValueError("Invalid workflow run identity")
+    url = f"https://github.com/{repo}/actions/runs/{run}/attempts/{attempt}"
+    artifact_url = os.environ["GRADE_ARTIFACT_URL"]
+    if not re.fullmatch(re.escape(f"https://github.com/{repo}/actions/runs/{run}/artifacts/") + r"[0-9]+", artifact_url):
+        raise ValueError("Invalid grade artifact link")
+    with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as stream:
+        stream.write(f"## Score: {grade}\n\nRun [{run}, attempt {attempt}]({url})\n\n")
+        stream.write(f"### gradetoken.ast\n\n[Download gradetoken.ast]({artifact_url}) (ZIP artifact).\n\nCopy the token below into `gradetoken.ast` for your LMS.\n\n")
+        stream.write(f"```text\n{token}\n```\n")
+    print("Score and gradetoken.ast are available in the workflow run summary.")
+
+
 def restore_files(repo, commit, source):
     """Restore only listed paths; never overwrite the workflow being verified."""
     repo = repo.resolve()
     snapshot = source["snapshot"]
-    if snapshot.get("schemaVersion") != 2 or sha(canonical(snapshot)) != source["policyDigest"]:
+    if snapshot.get("schemaVersion") != 3 or sha(canonical(snapshot)) != source["policyDigest"]:
         raise ValueError("Registered source package integrity check failed")
+    instructor = file_at(repo, commit, INSTRUCTOR)
+    instructor_path = repo / INSTRUCTOR
+    if (sha(instructor) != source["instructorWorkflowDigest"] or instructor_path.is_symlink()
+            or not instructor_path.parent.resolve().is_relative_to(repo) or instructor_path.read_bytes() != instructor):
+        raise ValueError("instructor_autograder.yml does not match the registered instructor source")
     original = file_at(repo, commit, WORKFLOW)
     current = repo / WORKFLOW
     if (source["commitSha"] != commit or sha(original) != source["workflowDigest"]
@@ -237,8 +265,8 @@ def restore_files(repo, commit, source):
             shutil.rmtree(target)
     for entry in snapshot["files"]:
         name = safe_path(entry["path"])
-        if name in (WORKFLOW, CONFIG):
-            if base64.b64decode(entry["content"], validate=True) != (original if name == WORKFLOW else configuration):
+        if name in (WORKFLOW, INSTRUCTOR, CONFIG):
+            if base64.b64decode(entry["content"], validate=True) != {WORKFLOW: original, INSTRUCTOR: instructor, CONFIG: configuration}[name]:
                 raise ValueError("Registered workflow does not match")
             continue
         if entry["mode"] not in ("100644", "100755") or not any(
@@ -263,7 +291,7 @@ def restore():
 if __name__ == "__main__":
     import sys
     try:
-        {"prepare": prepare, "receipt": receipt, "restore": restore}[sys.argv[1]]()
+        {"prepare": prepare, "receipt": receipt, "restore": restore, "summary": summary}[sys.argv[1]]()
     except Exception as error:
         # Do not include variable data or command output in workflow annotations.
         print("AbstractClassroom stopped: " + json.dumps(str(error)))

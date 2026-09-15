@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import tarfile
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -137,11 +138,135 @@ class RuntimeTests(unittest.TestCase):
         content = summary_file.read_text()
         self.assertIn("## Score: 82.5", content)
         self.assertIn("/actions/runs/123/attempts/2", content)
-        self.assertIn("### Grade token", content)
+        self.assertIn("### Grade Token", content)
         self.assertTrue(content.endswith("```text\nfixture.receipt.signature\n```\n"))
         after = {p.relative_to(self.root) for p in self.root.rglob("*") if p.is_file()}
         self.assertEqual(after - before, {Path("summary.md")})
         self.assertFalse(list(self.root.rglob("*.ast")))
+
+    def test_prepared_workspace_contains_student_code_and_restored_files_only(self):
+        self.write("tests/check", "student bypass")
+        self.write("tests/extra", "remove me")
+        self.write("student code.txt", "student implementation")
+        self.write(".mvn/config", "hidden build settings")
+        self.write("café/example.txt", "unicode file")
+        self.write("run-tests.sh", "#!/bin/sh\nexit 0\n")
+        (self.repo / "run-tests.sh").chmod(0o755)
+        self.git("config", "core.filemode", "true")
+        commit = self.commit()
+        # Neither untracked runner files nor locally changed unprotected content
+        # are allowed to enter the archive for the committed student submission.
+        self.write("runner-credential.txt", "not for the artifact")
+        self.write("student code.txt", "uncommitted change")
+        archive = self.root / "workspace.tar.gz"
+        runtime.prepare_workspace(self.repo, commit, self.package(commit), archive)
+        with tarfile.open(archive) as package:
+            names = package.getnames()
+            self.assertTrue(all(member.isfile() for member in package.getmembers()))
+            self.assertFalse(any(".git" in name.split("/") for name in names))
+            self.assertNotIn("runner-credential.txt", names)
+            self.assertNotIn("tests/extra", names)
+            self.assertIn(".mvn/config", names)
+            self.assertIn("café/example.txt", names)
+            self.assertEqual(package.extractfile("student code.txt").read(), b"student implementation")
+            self.assertEqual(package.extractfile("tests/check").read(), b"teacher assertions\n")
+            self.assertEqual(package.getmember("run-tests.sh").mode, 0o755)
+        extracted = self.root / "extracted"
+        extracted.mkdir()
+        subprocess.run(["tar", "-xzf", str(archive), "-C", str(extracted)], check=True)
+        self.assertTrue(os.access(extracted / "run-tests.sh", os.X_OK))
+        self.assertEqual((extracted / "tests/check").read_text(), "teacher assertions\n")
+
+    def test_unlisted_instructor_solution_is_not_in_source_or_student_workspace(self):
+        self.write("private-solution.java", "instructor-only solution")
+        instructor_commit = self.commit()
+        self.snapshot = runtime.source_package(self.repo, instructor_commit, "tests\nbuild-config")
+        self.assertNotIn("private-solution.java", {entry["path"] for entry in self.snapshot["files"]})
+        (self.repo / "private-solution.java").unlink()
+        student_commit = self.commit()
+        archive = self.root / "workspace.tar.gz"
+        runtime.prepare_workspace(self.repo, student_commit, self.package(student_commit), archive)
+        with tarfile.open(archive) as package:
+            self.assertNotIn("private-solution.java", package.getnames())
+
+    def test_protected_symlink_root_is_replaced_before_packaging(self):
+        (self.repo / "tests/check").unlink()
+        (self.repo / "tests").rmdir()
+        (self.repo / "tests").symlink_to(self.root, target_is_directory=True)
+        commit = self.commit()
+        archive = self.root / "workspace.tar.gz"
+        runtime.prepare_workspace(self.repo, commit, self.package(commit), archive)
+        with tarfile.open(archive) as package:
+            self.assertEqual(package.extractfile("tests/check").read(), b"teacher assertions\n")
+            self.assertNotIn("tests", package.getnames())
+
+    def test_unprotected_symlinks_and_submodules_are_rejected(self):
+        (self.repo / "escape").symlink_to(self.root)
+        commit = self.commit()
+        with self.assertRaises(ValueError):
+            runtime.prepare_workspace(self.repo, commit, self.package(commit), self.root / "symlink.tar.gz")
+        (self.repo / "escape").unlink()
+        commit = self.commit()
+        self.git("update-index", "--add", "--cacheinfo", f"160000,{commit},submodule")
+        self.git("-c", "user.name=Runtime tests", "-c", "user.email=runtime@example.invalid",
+                 "commit", "-m", "submodule fixture")
+        commit = self.git("rev-parse", "HEAD")
+        with self.assertRaises(ValueError):
+            runtime.prepare_workspace(self.repo, commit, self.package(commit), self.root / "submodule.tar.gz")
+
+    def test_archive_paths_cannot_escape_or_carry_git_metadata(self):
+        for name in ["", "/absolute", "../escape", "a/../escape", "a//b", "a/./b", ".git/config",
+                     "nested/.git/config", "a\\b", "bad\nfile", "bad\x00file", "bad\x7ffile"]:
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                runtime.workspace_path(name)
+        self.assertEqual(runtime.workspace_path("folder with spaces/café.txt"), "folder with spaces/café.txt")
+
+    def test_workspace_limits_remove_partial_archives(self):
+        for limit in ["MAX_WORKSPACE_BYTES", "MAX_WORKSPACE_FILES"]:
+            archive = self.root / f"{limit}.tar.gz"
+            with patch.object(runtime, limit, 1), self.assertRaises(ValueError):
+                runtime.prepare_workspace(self.repo, self.source_commit, self.package(self.source_commit), archive)
+            self.assertFalse(archive.exists())
+
+    def test_tampered_workflow_never_produces_a_workspace(self):
+        self.write(runtime.INSTRUCTOR, "student modified grading")
+        commit = self.commit()
+        archive = self.root / "workspace.tar.gz"
+        with self.assertRaises(ValueError):
+            runtime.prepare_workspace(self.repo, commit, self.package(commit), archive)
+        self.assertFalse(archive.exists())
+
+    def test_prepare_grading_restores_and_exports_workspace_in_the_preparation_job(self):
+        self.write("tests/check", "student bypass")
+        self.write("tests/extra", "remove me")
+        commit = self.commit()
+        result = {**self.package(commit), "mode": "grade"}
+        output = self.root / "outputs"
+        package = self.root / "package"
+        claims = {"workflow_sha": commit, "sha": commit}
+        with patch.dict(os.environ, {"SUBMISSION_PATH": str(self.repo), "GITHUB_SHA": commit,
+             "GITHUB_OUTPUT": str(output), "PACKAGE_PATH": str(package)}), \
+             patch.object(runtime, "oidc", return_value=("fixture", claims)), \
+             patch.object(runtime, "request", return_value=result):
+            runtime.prepare()
+        self.assertEqual([file.name for file in package.iterdir()], ["workspace.tar.gz"])
+        self.assertIn("mode=grade", output.read_text())
+        with tarfile.open(package / "workspace.tar.gz") as archive:
+            self.assertEqual(archive.extractfile("tests/check").read(), b"teacher assertions\n")
+            self.assertNotIn("tests/extra", archive.getnames())
+
+    def test_preparation_failure_does_not_export_grade_mode_or_artifact(self):
+        result = {**self.package(self.source_commit), "mode": "grade", "policyDigest": "0" * 64}
+        output = self.root / "outputs"
+        package = self.root / "package"
+        claims = {"workflow_sha": self.source_commit, "sha": self.source_commit}
+        with patch.dict(os.environ, {"SUBMISSION_PATH": str(self.repo), "GITHUB_SHA": self.source_commit,
+             "GITHUB_OUTPUT": str(output), "PACKAGE_PATH": str(package)}), \
+             patch.object(runtime, "oidc", return_value=("fixture", claims)), \
+             patch.object(runtime, "request", return_value=result), self.assertRaises(ValueError):
+            runtime.prepare()
+        self.assertFalse(output.exists())
+        self.assertFalse((package / "workspace.tar.gz").exists())
 
     def test_mismatched_score_is_not_displayed(self):
         summary_file = self.root / "summary.md"

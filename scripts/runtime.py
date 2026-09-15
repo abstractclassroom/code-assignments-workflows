@@ -18,7 +18,7 @@ API = "https://preview.abstractclassroom.com/api/code-assignments/github/workflo
 AUDIENCE = "abstractclassroom-code-assignments"
 WORKFLOW = ".github/workflows/auto-grading-workflow.yml"
 CONFIG = ".github/workflows/auto-grading-config.json"
-INSTRUCTOR = ".github/workflows/instructor_autograder.yml"
+INSTRUCTOR = ".github/actions/instructor/action.yml"
 MAX_BYTES = 2 * 1024 * 1024
 MAX_WORKSPACE_BYTES = 100 * 1024 * 1024
 MAX_WORKSPACE_FILES = 5000
@@ -158,7 +158,7 @@ def prepare():
     workflow = file_at(repo, commit, WORKFLOW)
     result = request(API, {"Authorization": "Bearer " + token}, {"action": "prepare", "assignmentId": assignment,
         "workflow": base64.b64encode(workflow).decode(), "workflowDigest": sha(workflow),
-        "instructorWorkflow": base64.b64encode(file_at(repo, commit, INSTRUCTOR)).decode(), "configuration": base64.b64encode(configuration).decode(), "pairingToken": os.environ.get("SOURCE_PAIRING_TOKEN", "")})
+        "instructorAction": base64.b64encode(file_at(repo, commit, INSTRUCTOR)).decode(), "configuration": base64.b64encode(configuration).decode(), "pairingToken": os.environ.get("SOURCE_PAIRING_TOKEN", "")})
     if result["mode"] == "source":
         snapshot = source_package(repo, commit, "\n".join(config["files"]))
         call({"action": "publish", "assignmentId": assignment, "snapshot": snapshot})
@@ -166,7 +166,7 @@ def prepare():
     elif result["mode"] == "source_waiting":
         print("Source publication waits for a push or workflow run on the branch/tag named by sourceVersion.")
     elif result["mode"] == "grade":
-        if result["instructorWorkflowDigest"] != sha(file_at(repo, commit, INSTRUCTOR)) or result["workflowDigest"] != sha(workflow) or result["configDigest"] != sha(configuration) or result["commitSha"] != commit:
+        if result["instructorActionDigest"] != sha(file_at(repo, commit, INSTRUCTOR)) or result["workflowDigest"] != sha(workflow) or result["configDigest"] != sha(configuration) or result["commitSha"] != commit:
             raise ValueError("The source workflow or submission revision does not match")
         package = Path(os.environ["PACKAGE_PATH"])
         package.mkdir(parents=True, exist_ok=False)
@@ -196,18 +196,32 @@ def receipt():
     result = request(API, {"Authorization": "Bearer " + token}, {
         "action": "receipt", "assignmentId": os.environ["ASSIGNMENT_ID"], "grade": grade,
         "workflow": base64.b64encode(workflow).decode(), "workflowDigest": sha(workflow),
-        "instructorWorkflow": base64.b64encode(file_at(repo, claims["workflow_sha"], INSTRUCTOR)).decode(),
+        "instructorAction": base64.b64encode(file_at(repo, claims["workflow_sha"], INSTRUCTOR)).decode(),
         "configuration": base64.b64encode(file_at(Path(os.environ["SUBMISSION_PATH"]), claims["workflow_sha"], CONFIG)).decode()})
     token = result.get("token", "")
-    if not re.fullmatch(r"[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+", token) or result.get("claims", {}).get("grade") != grade:
+    if not valid_grade_token(token) or result.get("claims", {}).get("grade") != grade:
         raise ValueError("Invalid grade token response")
     summary(grade, token)
+
+
+def valid_grade_token(token):
+    if not isinstance(token, str) or len(token) > 16384 or not re.fullmatch(r"ACGT1_[A-Za-z0-9_-]+", token):
+        return False
+    encoded = token[6:]
+    try:
+        receipt = base64.b64decode(encoded + "=" * (-len(encoded) % 4), altchars=b"-_", validate=True)
+    except ValueError:
+        return False
+    return (base64.urlsafe_b64encode(receipt).decode().rstrip("=") == encoded
+            and bool(re.fullmatch(rb"[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+", receipt)))
 
 
 def summary(grade, token):
     repo, run, attempt = os.environ["GITHUB_REPOSITORY"], os.environ["GITHUB_RUN_ID"], os.environ["GITHUB_RUN_ATTEMPT"]
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo) or not run.isdigit() or not attempt.isdigit():
         raise ValueError("Invalid workflow run identity")
+    if not valid_grade_token(token):
+        raise ValueError("Invalid Grade Token for the summary")
     url = f"https://github.com/{repo}/actions/runs/{run}/attempts/{attempt}"
     with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as stream:
         stream.write(f"## Score: {grade}\n\nRun [{run}, attempt {attempt}]({url})\n\n")
@@ -224,9 +238,9 @@ def restore_files(repo, commit, source):
         raise ValueError("Registered source package integrity check failed")
     instructor = file_at(repo, commit, INSTRUCTOR)
     instructor_path = repo / INSTRUCTOR
-    if (sha(instructor) != source["instructorWorkflowDigest"] or instructor_path.is_symlink()
+    if (sha(instructor) != source["instructorActionDigest"] or instructor_path.is_symlink()
             or not instructor_path.parent.resolve().is_relative_to(repo) or instructor_path.read_bytes() != instructor):
-        raise ValueError("instructor_autograder.yml does not match the registered instructor source")
+        raise ValueError("action.yml does not match the registered instructor source")
     original = file_at(repo, commit, WORKFLOW)
     current = repo / WORKFLOW
     if (source["commitSha"] != commit or sha(original) != source["workflowDigest"]

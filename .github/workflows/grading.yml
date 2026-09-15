@@ -1,0 +1,53 @@
+name: Run instructor grading
+on:
+  workflow_call:
+    inputs:
+      workspace-artifact-id:
+        type: string
+        required: false
+        default: ''
+      timeout-minutes:
+        type: number
+        required: false
+        default: 10
+    outputs:
+      score:
+        value: ${{ jobs.grading.outputs.score }}
+permissions:
+  contents: read
+  actions: read
+jobs:
+  grading:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      score: ${{ steps.instructor.outputs.score }}
+    steps:
+      - name: Check out for standalone grading
+        if: inputs.workspace-artifact-id == ''
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Download prepared workspace
+        if: inputs.workspace-artifact-id != ''
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ inputs.workspace-artifact-id }}
+          path: ${{ runner.temp }}/assignment-workspace
+          merge-multiple: true
+      - name: Open prepared workspace
+        if: inputs.workspace-artifact-id != ''
+        shell: bash
+        run: tar -xzf "$RUNNER_TEMP/assignment-workspace/workspace.tar.gz" -C "$GITHUB_WORKSPACE"
+      - name: Run instructor action
+        id: instructor
+        uses: ./.github/actions/instructor
+      - name: Show score
+        shell: bash
+        env:
+          ASSIGNMENT_SCORE: ${{ steps.instructor.outputs.score }}
+        run: printf '### Score\n\n%s\n' "$ASSIGNMENT_SCORE" >> "$GITHUB_STEP_SUMMARY"

@@ -31,6 +31,10 @@ class RuntimeTests(unittest.TestCase):
         self.source_commit = self.commit()
         self.snapshot = runtime.source_package(self.repo, self.source_commit, "tests\nbuild-config")
 
+    @staticmethod
+    def grade_token():
+        return 'ACGT1_' + base64.urlsafe_b64encode(b'fixture.receipt.signature').decode().rstrip('=')
+
     def git(self, *args):
         return subprocess.check_output(["git", "-C", str(self.repo), *args], stderr=subprocess.DEVNULL).decode().strip()
 
@@ -47,7 +51,7 @@ class RuntimeTests(unittest.TestCase):
     def package(self, commit):
         return {"snapshot": self.snapshot, "policyDigest": runtime.sha(runtime.canonical(self.snapshot)),
                 "workflowDigest": runtime.sha(runtime.file_at(self.repo, self.source_commit, runtime.WORKFLOW)),
-                "instructorWorkflowDigest": runtime.sha(runtime.file_at(self.repo, self.source_commit, runtime.INSTRUCTOR)),
+                "instructorActionDigest": runtime.sha(runtime.file_at(self.repo, self.source_commit, runtime.INSTRUCTOR)),
                 "configDigest": runtime.sha(runtime.file_at(self.repo, self.source_commit, runtime.CONFIG)), "commitSha": commit}
 
     def test_exact_deletion_and_restoration_preserve_student_files(self):
@@ -125,7 +129,7 @@ class RuntimeTests(unittest.TestCase):
 
     def test_receipt_displays_numeric_grade_and_matching_token_without_token_files(self):
         summary_file = self.root / "summary.md"
-        response = {"token": "fixture.receipt.signature", "claims": {"grade": 82.5}}
+        response = {"token": self.grade_token(), "claims": {"grade": 82.5}}
         before = {p.relative_to(self.root) for p in self.root.rglob("*") if p.is_file()}
         with patch.dict(os.environ, {"SUBMISSION_PATH": str(self.repo), "ASSIGNMENT_ID": "aca_" + "x" * 32,
              "ASSIGNMENT_GRADE": "82.5", "GITHUB_STEP_SUMMARY": str(summary_file),
@@ -139,7 +143,8 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("## Score: 82.5", content)
         self.assertIn("/actions/runs/123/attempts/2", content)
         self.assertIn("### Grade Token", content)
-        self.assertTrue(content.endswith("```text\nfixture.receipt.signature\n```\n"))
+        self.assertTrue(content.endswith(f"```text\n{self.grade_token()}\n```\n"))
+        self.assertNotIn("fixture.receipt.signature", content)
         after = {p.relative_to(self.root) for p in self.root.rglob("*") if p.is_file()}
         self.assertEqual(after - before, {Path("summary.md")})
         self.assertFalse(list(self.root.rglob("*.ast")))
@@ -276,6 +281,24 @@ class RuntimeTests(unittest.TestCase):
              patch.object(runtime, "request", return_value={"token": "fixture.receipt.signature", "claims": {"grade": 100}}):
             with self.assertRaises(ValueError):
                 runtime.receipt()
+        self.assertFalse(summary_file.exists())
+
+
+    def test_grade_token_rejects_raw_tokens_and_malformed_envelopes(self):
+        self.assertTrue(runtime.valid_grade_token(self.grade_token()))
+        self.assertFalse(runtime.valid_grade_token("fixture.receipt.signature"))
+        for value in ["***", "ACGT2_x", "ACGT1_", "ACGT1_====", self.grade_token() + "=",
+                      self.grade_token() + "\n", "ACGT1_" + "x" * 16384, None, 123,
+                      "ACGT1_" + base64.urlsafe_b64encode(b"invalid").decode().rstrip("=")]:
+            with self.subTest(value=str(value)[:40]):
+                self.assertFalse(runtime.valid_grade_token(value))
+
+    def test_summary_never_publishes_a_raw_credential_shaped_token(self):
+        summary_file = self.root / "summary.md"
+        with patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": str(summary_file),
+             "GITHUB_REPOSITORY": "student/assignment", "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1"}):
+            with self.assertRaises(ValueError):
+                runtime.summary(100, "fixture.receipt.signature")
         self.assertFalse(summary_file.exists())
 
 

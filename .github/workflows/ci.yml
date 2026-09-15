@@ -9,3 +9,16 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Test exact restoration and workflow integrity
         run: PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
+  instructor-action:
+    permissions: { contents: read, actions: read }
+    uses: ./.github/workflows/grading.yml
+  summary-display:
+    needs: instructor-action
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Check action output and publish synthetic copyable token
+        env:
+          FIXTURE_SCORE: ${{ needs.instructor-action.outputs.score }}
+        run: python3 scripts/summary_fixture.py

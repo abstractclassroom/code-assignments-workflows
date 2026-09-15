@@ -17,7 +17,7 @@ from pathlib import Path
 API = "https://preview.abstractclassroom.com/api/code-assignments/github/workflow"
 AUDIENCE = "abstractclassroom-code-assignments"
 WORKFLOW = ".github/workflows/auto-grading-workflow.yml"
-CONFIG = ".github/workflows/auto-grading-config.json"
+CONFIG = ".github/actions/instructor/auto-grading-config.json"
 INSTRUCTOR = ".github/actions/instructor/action.yml"
 MAX_BYTES = 2 * 1024 * 1024
 MAX_WORKSPACE_BYTES = 100 * 1024 * 1024
@@ -160,7 +160,7 @@ def prepare():
         "workflow": base64.b64encode(workflow).decode(), "workflowDigest": sha(workflow),
         "instructorAction": base64.b64encode(file_at(repo, commit, INSTRUCTOR)).decode(), "configuration": base64.b64encode(configuration).decode(), "pairingToken": os.environ.get("SOURCE_PAIRING_TOKEN", "")})
     if result["mode"] == "source":
-        snapshot = source_package(repo, commit, "\n".join(config["files"]))
+        snapshot = source_package(repo, commit, "\n".join(config["protected_files"]))
         call({"action": "publish", "assignmentId": assignment, "snapshot": snapshot})
         print("Instructor source published. Students can now submit this assignment.")
     elif result["mode"] == "source_waiting":

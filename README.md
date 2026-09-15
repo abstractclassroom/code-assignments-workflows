@@ -1,6 +1,6 @@
 # AbstractClassroom Code Assignments workflows
 
-Shared source verification, file restoration, and JWT issuance. This repository
+Shared source verification, workspace preparation, and API Grade Token requests. This repository
 contains AbstractClassroom's implementation. The
 [instructor starter](https://github.com/abstractclassroom/code-assignments-template)
 contains only these three files:
@@ -12,7 +12,7 @@ contains only these three files:
 ```
 
 **Keep all three filenames unchanged.** `auto-grading-workflow.yml` coordinates
-source verification and JWT issuance. Instructors edit `instructor_autograder.yml`
+source verification and Grade Token requests. Instructors edit `instructor_autograder.yml`
 for tests and scoring. Both workflows and the JSON are verified against the source.
 
 ## Instructor setup
@@ -33,7 +33,7 @@ for tests and scoring. Both workflows and the JSON are verified against the sour
    list individual files or entire directories. Use an empty list if none need
    replacement. Both workflows and JSON are checked automatically; do not list them.
 3. Add your starter code and tests. Put build/test steps in `instructor_autograder.yml`,
-   **after the restore step and before Save final score**. Use any tools you need.
+   **after workspace setup and before Save final score**. Use any tools you need.
    Set the grading timeout (the starter uses 10 minutes; up to 60 is supported).
    Update the `score` environment variable as checks earn points, persisting it
    through `$GITHUB_ENV`. The final JWT contains that value as `grade`. You choose
@@ -51,6 +51,27 @@ for tests and scoring. Both workflows and the JSON are verified against the sour
    Keep all three workflow/configuration files identical to the selected source.
 
 ## Scoring
+
+### Run the instructor grader independently
+
+Open **Actions → Instructor autograder → Run workflow** and select a branch.
+The standalone run checks out that commit, runs your normal build/tests, and
+displays **Score** in its summary. It needs no AbstractClassroom account, pairing,
+subscription, secret, or published source. It does **not** issue a Grade Token.
+The empty starter still reports zero until you add tests and scoring.
+
+Keep the supplied setup steps: manual runs use a normal checkout, while
+integrated runs download and unpack an already-prepared student workspace. The artifact input is required
+only when the coordinator calls the workflow, not on the manual form. No separate
+test script or second copy of your grading logic is needed. Automatic student
+grading continues through **Auto grading**, so pushes do not run duplicate graders.
+
+The standalone-capable YAML requires shared workflows `v2.0.0` and matching backend
+validation/trust before source publication. The source-only
+coordinator still publishes files without issuing a token. Use the standalone
+grader to test an instructor solution independently.
+
+### Calculate the score
 
 The instructor workflow initializes the environment variable `score` to zero. Each instructor
 step can add points and persist the new value for subsequent steps:
@@ -116,22 +137,38 @@ invalidate a run using an unchanged version tag.
 
 - `source` verifies both original workflows and the JSON, identifies the selected registered
   source, and provides its immutable snapshot to the grading job.
-- The restore step **deletes each listed student path completely and replaces it**
+- The preparation job **deletes each listed student path completely and replaces it**
   from that source before instructor steps run. Other student files are left alone.
   The YAML and JSON are checked before restoration and are never overwritten to
   conceal a mismatch. Changes are confined to the Actions checkout, not committed
   back to GitHub.
+- Preparation exports committed student files plus the restored protected files
+  into `workspace.tar.gz`. It excludes Git metadata and untracked runner files,
+  and never exports the instructor's unlisted solution. Only regular files are
+  supported, with limits of 5,000 files, 100 MiB total, and 10 MiB per student file.
+  Symlinks/submodules outside replaced paths are rejected. The archive preserves
+  executable permissions, hidden files, and filenames containing spaces or Unicode.
+- The instructor YAML uses only standard GitHub checkout/download actions, tar,
+  and the instructor's own setup/test/scoring commands. It contains no
+  AbstractClassroom action or API request. Integrated runs receive the immutable
+  prepared-workspace artifact ID, skip checkout, and unpack before testing.
 - The coordinator calls `instructor_autograder.yml` for the instructor's native GitHub Actions steps. There is no
   separate grading-policy JSON, required container, build system, or report format.
-- The final `jwt` job runs separately after successful grading. AbstractClassroom
+- The final **Grade Token** job runs separately after successful grading. AbstractClassroom
   recomputes the original workflow hash there, verifies its source binding, and
-  includes the final numeric `grade` in an assignment-specific JWT.
-  Signing keys stay on the server.
+  includes the final numeric `grade` in an assignment-specific token.
+  The API generates and signs it. Signing keys stay on the server.
+
+All GitHub jobs run in the calling repository's workflow/account. Referencing a
+shared workflow does not run grading in AbstractClassroom's GitHub account. The
+preparation and grading jobs use separate GitHub-hosted machines, connected by
+the prepared-workspace artifact. Git-dependent build commands need their own
+explicit setup because the integrated workspace intentionally excludes `.git`.
 
 Keep the coordinator wiring and the instructor workflow's supplied `grading` job.
-Add your steps between restoration and the final score export; extra grading jobs
+Add your steps between workspace setup and the final score export; extra grading jobs
 or additional reusable workflows are not supported by this initial contract.
-The backend validates both workflow contracts, the final JWT dependency chain, first restore step, and
+The backend validates both workflow contracts, the final Grade Token dependency chain, checkout/download/unpack routing, and
 final score output wiring,
 so the JWT cannot be requested by an unrelated job or a caller-supplied pass flag.
 The shared workflows use version tags; the server also checks the approved resolved
@@ -172,6 +209,11 @@ Tests delivered to student-owned runners are visible, including tests published
 from a private instructor repository. Hidden assessments need separate infrastructure.
 
 ## Troubleshooting and migration
+
+- `v2.0.0` replaces the old restore action with workspace preparation in `source`.
+  Update both workflow YAML files together and republish the registered source.
+  Deploy the matching backend trust first. Old shared version tags are immutable,
+  and already-issued tokens remain verifiable.
 
 - Keep the three filenames and the instructor's YAML/JSON bytes unchanged in student
   repositories. Editing the file list or workflow causes verification to fail.

@@ -1,12 +1,14 @@
 """Trusted GitHub runner control code. Never import files from a submission."""
 import base64
 import hashlib
+import io
 import json
 import math
 import os
 import re
 import subprocess
 import shutil
+import tarfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -18,6 +20,8 @@ WORKFLOW = ".github/workflows/auto-grading-workflow.yml"
 CONFIG = ".github/workflows/auto-grading-config.json"
 INSTRUCTOR = ".github/workflows/instructor_autograder.yml"
 MAX_BYTES = 2 * 1024 * 1024
+MAX_WORKSPACE_BYTES = 100 * 1024 * 1024
+MAX_WORKSPACE_FILES = 5000
 
 
 def sha(value):
@@ -166,7 +170,8 @@ def prepare():
             raise ValueError("The source workflow or submission revision does not match")
         package = Path(os.environ["PACKAGE_PATH"])
         package.mkdir(parents=True, exist_ok=False)
-        (package / "source.json").write_bytes(canonical(result))
+        prepare_workspace(repo, commit, result, package / "workspace.tar.gz")
+        print("Verified files restored. The prepared student workspace is ready for grading.")
     else:
         raise ValueError("Unexpected assignment mode")
     output("mode", result["mode"])
@@ -206,7 +211,7 @@ def summary(grade, token):
     url = f"https://github.com/{repo}/actions/runs/{run}/attempts/{attempt}"
     with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as stream:
         stream.write(f"## Score: {grade}\n\nRun [{run}, attempt {attempt}]({url})\n\n")
-        stream.write("### Grade token\n\nCopy the token below and paste it into your LMS submission.\n\n")
+        stream.write("### Grade Token\n\nCopy the token below into your assignment submission.\n\n")
         stream.write(f"```text\n{token}\n```\n")
     print("Score and grade token are available in the workflow run summary.")
 
@@ -269,18 +274,59 @@ def restore_files(repo, commit, source):
         target.chmod(0o755 if entry["mode"] == "100755" else 0o644)
 
 
-def restore():
-    package = Path(os.environ["SOURCE_PACKAGE"])
-    if package.stat().st_size > 4 * 1024 * 1024:
-        raise ValueError("Source package is too large")
-    source = json.loads(package.read_bytes())
-    restore_files(Path(os.environ["GITHUB_WORKSPACE"]), os.environ["GITHUB_SHA"], source)
-    print("Workflow verified. Listed instructor paths were deleted and restored before grading.")
+def workspace_path(name):
+    # Only regular-file archive members are emitted. Never export Git metadata,
+    # credential files created by checkout, symlinks, or untracked runner files.
+    if (not isinstance(name, str) or not name or len(name.encode()) > 1024
+            or "\\" in name or any(ord(char) < 32 or ord(char) == 127 for char in name)
+            or any(part in ("", ".", "..", ".git") for part in name.split("/"))):
+        raise ValueError("Invalid prepared workspace path")
+    return name
+
+
+def prepare_workspace(repo, commit, source, archive):
+    """Verify/restore first, then export student Git blobs plus protected source files.
+
+    Building the archive from explicit blobs avoids reading untracked credentials
+    or an instructor's unlisted solution. No student code runs in this job.
+    """
+    restore_files(repo, commit, source)
+    snapshot = source["snapshot"]
+    roots = snapshot["replacePaths"]
+    protected = lambda name: any(name == root or name.startswith(root + "/") for root in roots)
+    entries = {}
+    for name, mode, kind, oid in tree(repo, commit):
+        if protected(name):
+            continue
+        workspace_path(name)
+        if mode not in ("100644", "100755") or kind != "blob":
+            raise ValueError("Prepared workspaces support regular files, not symlinks or submodules")
+        entries[name] = (mode, oid, None)
+    for entry in snapshot["files"]:
+        if protected(entry["path"]):
+            entries[workspace_path(entry["path"])] = (entry["mode"], None, entry["content"])
+    if len(entries) > MAX_WORKSPACE_FILES:
+        raise ValueError("Prepared workspace exceeds the file limit")
+    total = 0
+    try:
+        with tarfile.open(archive, "w:gz", format=tarfile.PAX_FORMAT) as package:
+            for name, (mode, oid, encoded) in sorted(entries.items()):
+                content = blob(repo, oid) if oid else base64.b64decode(encoded, validate=True)
+                total += len(content)
+                if total > MAX_WORKSPACE_BYTES:
+                    raise ValueError("Prepared workspace exceeds the size limit")
+                member = tarfile.TarInfo(name)
+                member.size = len(content)
+                member.mode = 0o755 if mode == "100755" else 0o644
+                package.addfile(member, io.BytesIO(content))
+    except Exception:
+        archive.unlink(missing_ok=True)
+        raise
 
 if __name__ == "__main__":
     import sys
     try:
-        {"prepare": prepare, "receipt": receipt, "restore": restore}[sys.argv[1]]()
+        {"prepare": prepare, "receipt": receipt}[sys.argv[1]]()
     except Exception as error:
         # Do not include variable data or command output in workflow annotations.
         print("AbstractClassroom stopped: " + json.dumps(str(error)))

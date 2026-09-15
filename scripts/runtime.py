@@ -2,6 +2,7 @@
 import base64
 import hashlib
 import json
+import math
 import os
 import re
 import subprocess
@@ -170,11 +171,22 @@ def prepare():
     output("assignment-id", assignment)
 
 
+def grade_value(raw):
+    try:
+        value = json.loads(raw)
+    except (ValueError, TypeError):
+        raise ValueError("The final score must be a nonnegative number") from None
+    if type(value) not in (int, float) or not 0 <= value <= 9007199254740991 or not math.isfinite(value):
+        raise ValueError("The final score must be a finite nonnegative number within the supported numeric range")
+    return value
+
+
 def receipt():
+    grade = grade_value(os.environ.get("ASSIGNMENT_GRADE", ""))
     token, claims = oidc()
     workflow = file_at(Path(os.environ["SUBMISSION_PATH"]), claims["workflow_sha"], WORKFLOW)
     result = request(API, {"Authorization": "Bearer " + token}, {
-        "action": "receipt", "assignmentId": os.environ["ASSIGNMENT_ID"],
+        "action": "receipt", "assignmentId": os.environ["ASSIGNMENT_ID"], "grade": grade,
         "workflow": base64.b64encode(workflow).decode(), "workflowDigest": sha(workflow),
         "configuration": base64.b64encode(file_at(Path(os.environ["SUBMISSION_PATH"]), claims["workflow_sha"], CONFIG)).decode()})
     filename = result.get("filename", "")
